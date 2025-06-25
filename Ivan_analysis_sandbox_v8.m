@@ -1243,21 +1243,32 @@ function [info_shuffles, percentile, pval] = ...
     
     % Run shuffling procedure multiple times
     for k = 1:nShuffles
-        % Create a shuffled copy of position trace
-        X_shuff = X;
+        X_shuff = X; % Start with original position trace
 
-        % Create and apply a random circular shift to position for valid frames
-        if total_valid_frames > 1
-            shift_amt = randi(total_valid_frames); 
-            shuffled_indices = circshift(valid_frames, shift_amt);
-            X_shuff(valid_frames) = X(shuffled_indices);
+        % Get all the positions the animal actually visited during valid frames
+        valid_position = X(valid_frames);
+
+        % Randomly shuffle these positions - each time point gets a random location
+        shuffled_positions = valid_position(randperm(total_valid_frames));
+
+        % Assign the shuffled positions back to the valid frames
+        X_shuff(valid_frames) = shuffled_positions;
+
+        % Test the quality of shuffling
+        correlation = corr(X(valid_frames), X_shuff(valid_frames));
+        fprintf('Correlation between original and shuffled: %.4f\n', correlation);
+
+        if abs(correlation) < 0.1
+            fprintf('✅ Good shuffling - low correlation\n');
+        else
+            fprintf('❌ Bad shuffling - correlation too high\n');
         end
 
         % Calculate rate map for shuffled data
         [rate_map_shuff, occ_shuff] = calculate_rate_map_for_shuffle(X_shuff, S, valid_idx, bin_edges, gaussian_kernel, frame_rate);
 
         % Calculate spatial information on shuffled data
-        info_shuffles(:, k) = compute_spatial_info(rate_map_shuff, occ_shuff);
+        info_shuffles(:, k) = compute_spatial_info_corrected(rate_map_shuff, occ_shuff);
     end
     
     % Compare real information to shuffled distribution
