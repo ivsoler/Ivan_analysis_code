@@ -322,8 +322,6 @@ for s = 1:length(sessions)
                             session_neuron_S, ...
                             params, ...
                             info_right, ...
-                            'right', ...
-                            num_bins, ...
                             500);
 
     [info_left_shuffles, percentile_left, pval_left] = ...
@@ -331,18 +329,16 @@ for s = 1:length(sessions)
                             session_neuron_S, ...
                             params, ...
                             info_left, ...
-                            'left', ...
-                            num_bins, ...
                             500);
 
     % Calculate weighted shuffled info for combined measure
     % Use same weights as for real data
     info_combined_shuffles = weights(1) * info_left_shuffles + weights(2) * info_right_shuffles;
 
-    % Determine which cells are significant (using 90th percentile)
-    sig_right = determine_significant_cells(info_right, info_right_shuffles, 90);
-    sig_left = determine_significant_cells(info_left, info_left_shuffles, 90);
-    sig_combined = determine_significant_cells(info_combined, info_combined_shuffles, 90);
+    % Determine which cells are significant (using 95th percentile)
+    sig_right = determine_significant_cells(info_right, info_right_shuffles, 95);
+    sig_left = determine_significant_cells(info_left, info_left_shuffles, 95);
+    sig_combined = determine_significant_cells(info_combined, info_combined_shuffles, 95);
     
     % Create structure to track stats across sessions
     all_session_results(s).session = sessions(s);
@@ -352,6 +348,9 @@ for s = 1:length(sessions)
     all_session_results(s).info_combined = info_combined;
     all_session_results(s).sig_combined = sig_combined;
     all_session_results(s).percent_significant = 100 * sum(sig_combined) / length(sig_combined);
+    all_session_results(s).weights = weights;
+    all_session_results(s).info_right_shuffles = info_right_shuffles;
+    all_session_results(s).info_left_shuffles = info_left_shuffles;
     
     fprintf('Session %d: %d neurons, %.1f%% significant\n', s, ...
         all_session_results(s).n_neurons, ...
@@ -364,6 +363,10 @@ for s = 1:length(all_session_results)
     fprintf('Session %d: %d neurons, max info = %.4f\n', s, ...
         all_session_results(s).n_neurons, ...
         max(all_session_results(s).info_combined));
+        fprintf('          %d/%d neurons significant (%.1f%%)\n', ...
+        sum(all_session_results(s).sig_combined), ...
+        all_session_results(s).n_neurons, ...
+        all_session_results(s).percent_significant);
 end
 
 % Check if max_info calculation works
@@ -446,6 +449,155 @@ xlim([0, ceil(max_info)]);
 ax = gca;
 ax.GridAlpha = 0.15;
 ax.Box = 'off';
+%%
+%% Test information content with different bin sizes
+fprintf('\n=== Testing Information Content with Different Bin Sizes ===\n');
+
+% Define bin sizes to test
+bin_sizes_to_test = [2, 4, 6, 8]; % in cm
+info_by_binsize = struct();
+
+% Store original bin size
+original_bin_size = params.bin_size_cm;
+
+% Loop through each session and each bin size
+for s = 1:length(sessions)
+    fprintf('\nSession %d:\n', s);
+    
+    session_mask = cal_timestamp_early.Session == sessions(s);
+    session_neuron_S = neuron_sessions{s}.S;
+    
+    % Initialize storage for this session
+    info_by_binsize(s).session = s;
+    info_by_binsize(s).bin_sizes = bin_sizes_to_test;
+    info_by_binsize(s).info_combined = zeros(size(session_neuron_S, 1), length(bin_sizes_to_test));
+    info_by_binsize(s).n_significant = zeros(1, length(bin_sizes_to_test));
+    info_by_binsize(s).percent_significant = zeros(1, length(bin_sizes_to_test));
+    
+    % Test each bin size
+    for b = 1:length(bin_sizes_to_test)
+        % Update bin size in params
+        params.bin_size_cm = bin_sizes_to_test(b);
+        
+        fprintf('  Testing bin size = %d cm...\n', params.bin_size_cm);
+        
+        % Recalculate rate maps with new bin size
+        [rate_map_left_sorted, rate_map_right_sorted, ...
+            rate_map_left, rate_map_right, ...
+            smooth_occ_left, smooth_occ_right] = ...
+            compute_spatial_rate_maps_corrected(X_scaled_matched, session_neuron_S, session_mask, params);
+        
+        % Calculate information content
+        info_right = compute_spatial_info_corrected(rate_map_right, smooth_occ_right);
+        info_left = compute_spatial_info_corrected(rate_map_left, smooth_occ_left);
+        
+        % Calculate weighted combined info
+        total_time_right = sum(smooth_occ_right);
+        total_time_left = sum(smooth_occ_left);
+        weights = [total_time_left, total_time_right] / (total_time_left + total_time_right);
+        info_combined = weights(1) * info_left + weights(2) * info_right;
+        
+        % Run shuffling for significance testing (with fewer shuffles for speed)
+        [info_right_shuffles, ~, ~] = ...
+            shuffle_spatial_info_corrected(X_scaled_matched(session_mask), ...
+                                session_neuron_S, ...
+                                params, ...
+                                info_right, ...
+                                500); % Using 100 shuffles for speed
+        
+        [info_left_shuffles, ~, ~] = ...
+            shuffle_spatial_info_corrected(X_scaled_matched(session_mask), ...
+                                session_neuron_S, ...
+                                params, ...
+                                info_left, ...
+                                500);
+        
+        % Combined shuffles
+        info_combined_shuffles = weights(1) * info_left_shuffles + weights(2) * info_right_shuffles;
+        
+        % Determine significant cells (95th percentile)
+        sig_combined = determine_significant_cells(info_combined, info_combined_shuffles, 95);
+        
+        % Store results
+        info_by_binsize(s).info_combined(:, b) = info_combined;
+        info_by_binsize(s).n_significant(b) = sum(sig_combined);
+        info_by_binsize(s).percent_significant(b) = 100 * sum(sig_combined) / length(sig_combined);
+        
+        fprintf('    Mean info: %.4f, %d/%d neurons significant (%.1f%%)\n', ...
+            mean(info_combined), sum(sig_combined), length(sig_combined), ...
+            100 * sum(sig_combined) / length(sig_combined));
+    end
+end
+
+% Restore original bin size
+params.bin_size_cm = original_bin_size;
+
+%% Visualize bin size effects
+figure('Position', [100, 100, 1400, 400]);
+
+% Plot 1: Mean information content vs bin size
+subplot(1, 3, 1);
+hold on;
+for s = 1:length(sessions)
+    mean_info = mean(info_by_binsize(s).info_combined, 1);
+    sem_info = std(info_by_binsize(s).info_combined, 0, 1) / sqrt(size(info_by_binsize(s).info_combined, 1));
+    errorbar(bin_sizes_to_test, mean_info, sem_info, 'o-', 'LineWidth', 2, ...
+        'MarkerSize', 8, 'DisplayName', sprintf('Session %d', s));
+end
+xlabel('Bin Size (cm)');
+ylabel('Mean Information Content (bits)');
+title('Information Content vs Bin Size');
+legend('Location', 'best');
+grid on;
+hold off;
+
+% Plot 2: Percentage of significant cells vs bin size
+subplot(1, 3, 2);
+hold on;
+for s = 1:length(sessions)
+    plot(bin_sizes_to_test, info_by_binsize(s).percent_significant, 'o-', ...
+        'LineWidth', 2, 'MarkerSize', 8, 'DisplayName', sprintf('Session %d', s));
+end
+xlabel('Bin Size (cm)');
+ylabel('% Significant Neurons');
+title('Significant Neurons vs Bin Size');
+legend('Location', 'best');
+grid on;
+hold off;
+
+% Plot 3: Distribution of information content for each bin size
+subplot(1, 3, 3);
+all_info = [];
+all_bins = [];
+all_sessions = [];
+for s = 1:length(sessions)
+    for b = 1:length(bin_sizes_to_test)
+        all_info = [all_info; info_by_binsize(s).info_combined(:, b)];
+        all_bins = [all_bins; repmat(bin_sizes_to_test(b), size(info_by_binsize(s).info_combined, 1), 1)];
+        all_sessions = [all_sessions; repmat(s, size(info_by_binsize(s).info_combined, 1), 1)];
+    end
+end
+boxplot(all_info, all_bins, 'Positions', bin_sizes_to_test, 'Widths', 0.6);
+xlabel('Bin Size (cm)');
+ylabel('Information Content (bits)');
+title('Distribution of Information Content');
+grid on;
+
+sgtitle('Effect of Spatial Bin Size on Information Content');
+
+% Print summary table
+fprintf('\n=== Summary: Information Content by Bin Size ===\n');
+fprintf('Session | Bin Size | Mean Info | %% Significant\n');
+fprintf('--------|----------|-----------|---------------\n');
+for s = 1:length(sessions)
+    for b = 1:length(bin_sizes_to_test)
+        fprintf('   %d    |   %2d cm  |   %.4f  |    %.1f%%\n', ...
+            s, bin_sizes_to_test(b), ...
+            mean(info_by_binsize(s).info_combined(:, b)), ...
+            info_by_binsize(s).percent_significant(b));
+    end
+    fprintf('--------|----------|-----------|---------------\n');
+end
 %% *Calculate stability of the spatial activity rate map*
 % *Step 5: Calculate within-session stability u*sing the Shuman et al. (2020) formula 
 % _"...taking the Fisher Z-score of the Pearson correlation coefficient between 
@@ -791,8 +943,8 @@ if length(gaussian_kernel) > 1
     smoothed_activity_right = zeros(size(spatial_activity_right));
     smoothed_activity_left = zeros(size(spatial_activity_left));
     for n = 1:num_neurons
-        smoothed_activity_right = conv(spatial_activity_right(n, :), gaussian_kernel, 'same');
-        smoothed_activity_left = conv(spatial_activity_left(n, :), gaussian_kernel, 'same');
+        smoothed_activity_right(n, :) = conv(spatial_activity_right(n, :), gaussian_kernel, 'same');
+        smoothed_activity_left(n,:) = conv(spatial_activity_left(n, :), gaussian_kernel, 'same');
     end
 else
     smooth_occ_right = occupancy_right;
@@ -1203,6 +1355,13 @@ function [info_shuffles, percentile, pval] = ...
 
     % Initialize output variables
     num_neurons = size(S, 1);
+
+    % ADD THIS CHECK
+    if length(real_info) ~= num_neurons
+        error('Dimension mismatch: real_info has %d elements but S has %d neurons', ...
+              length(real_info), num_neurons);
+    end
+
     info_shuffles = zeros(num_neurons, nShuffles);
     frame_rate = params.frame_rate;
     
